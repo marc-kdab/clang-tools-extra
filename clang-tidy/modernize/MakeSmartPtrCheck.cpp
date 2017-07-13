@@ -43,10 +43,14 @@ const char MakeSmartPtrCheck::ResetCall[] = "resetCall";
 const char MakeSmartPtrCheck::NewExpression[] = "newExpression";
 
 MakeSmartPtrCheck::MakeSmartPtrCheck(StringRef Name, ClangTidyContext *Context,
-                                     StringRef MakeSmartPtrFunctionName)
+                                     StringRef MakeSmartPtrFunctionName,
+                                     StringRef SmartPtrClassName,
+                                     unsigned int CheckOptions)
     : ClangTidyCheck(Name, Context),
       IncludeStyle(utils::IncludeSorter::parseIncludeStyle(
           Options.get("IncludeStyle", "llvm"))),
+      CheckOptions(CheckOptions),
+      SmartPtrClassName(SmartPtrClassName),
       MakeSmartPtrFunctionHeader(
           Options.get("MakeSmartPtrFunctionHeader", StdMemoryHeader)),
       MakeSmartPtrFunctionName(
@@ -56,6 +60,8 @@ void MakeSmartPtrCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "IncludeStyle", IncludeStyle);
   Options.store(Opts, "MakeSmartPtrFunctionHeader", MakeSmartPtrFunctionHeader);
   Options.store(Opts, "MakeSmartPtrFunction", MakeSmartPtrFunctionName);
+  if (CheckOptions & CreateFunctionIsMember)
+      Options.store(Opts, "SmartPtrClassName", SmartPtrClassName);
 }
 
 void MakeSmartPtrCheck::registerPPCallbacks(CompilerInstance &Compiler) {
@@ -134,23 +140,30 @@ void MakeSmartPtrCheck::checkConstruct(SourceManager &SM,
   auto Diag = diag(ConstructCallStart, "use %0 instead")
               << MakeSmartPtrFunctionName;
 
-  // Find the location of the template's left angle.
-  size_t LAngle = ExprStr.find("<");
-  SourceLocation ConstructCallEnd;
-  if (LAngle == StringRef::npos) {
-    // If the template argument is missing (because it is part of the alias)
-    // we have to add it back.
-    ConstructCallEnd = ConstructCallStart.getLocWithOffset(ExprStr.size());
-    Diag << FixItHint::CreateInsertion(
-        ConstructCallEnd,
-        "<" + GetNewExprName(New, SM, getLangOpts()) + ">");
+  if (CheckOptions & CreateFunctionIsMember) {
+    // The easy case: we just need to insert ::make in front of the ctor arguments,
+    // regardless of whether the ctor is called via a type alias or not:
+    Diag << FixItHint::CreateInsertion(ConstructCallStart.getLocWithOffset(ExprStr.size()),
+        "::" + MakeSmartPtrFunctionName);
   } else {
-    ConstructCallEnd = ConstructCallStart.getLocWithOffset(LAngle);
-  }
+    // Find the location of the template's left angle.
+    size_t LAngle = ExprStr.find("<");
+    SourceLocation ConstructCallEnd;
+    if (LAngle == StringRef::npos) {
+      // If the template argument is missing (because it is part of the alias)
+      // we have to add it back.
+      ConstructCallEnd = ConstructCallStart.getLocWithOffset(ExprStr.size());
+      Diag << FixItHint::CreateInsertion(
+          ConstructCallEnd,
+          "<" + GetNewExprName(New, SM, getLangOpts()) + ">");
+    } else {
+      ConstructCallEnd = ConstructCallStart.getLocWithOffset(LAngle);
+    }
 
-  Diag << FixItHint::CreateReplacement(
-      CharSourceRange::getCharRange(ConstructCallStart, ConstructCallEnd),
-      MakeSmartPtrFunctionName);
+    Diag << FixItHint::CreateReplacement(
+        CharSourceRange::getCharRange(ConstructCallStart, ConstructCallEnd),
+        MakeSmartPtrFunctionName);
+  }
 
   // If the smart_ptr is built with brace enclosed direct initialization, use
   // parenthesis instead.
@@ -183,10 +196,18 @@ void MakeSmartPtrCheck::checkReset(SourceManager &SM,
   auto Diag = diag(ResetCallStart, "use %0 instead")
               << MakeSmartPtrFunctionName;
 
+  std::string ClassName, MemberName;
+  if (CheckOptions & CreateFunctionIsMember) {
+    ClassName = SmartPtrClassName;
+    MemberName = "::" + MakeSmartPtrFunctionName;
+  } else {
+    ClassName = MakeSmartPtrFunctionName;
+  }
+
   Diag << FixItHint::CreateReplacement(
       CharSourceRange::getCharRange(OperatorLoc, ExprEnd),
-      (llvm::Twine(" = ") + MakeSmartPtrFunctionName + "<" +
-       GetNewExprName(New, SM, getLangOpts()) + ">")
+      (llvm::Twine(" = ") + ClassName + "<" +
+       GetNewExprName(New, SM, getLangOpts()) + ">" + MemberName)
           .str());
 
   if (Expr->isArrow())

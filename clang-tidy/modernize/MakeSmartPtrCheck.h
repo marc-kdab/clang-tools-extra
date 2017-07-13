@@ -24,8 +24,15 @@ namespace modernize {
 /// Base class for MakeSharedCheck and MakeUniqueCheck.
 class MakeSmartPtrCheck : public ClangTidyCheck {
 public:
+  enum : unsigned int {
+    NoOptions = 0x0,
+    CreateFunctionIsMember = 0x1,
+  };
+
   MakeSmartPtrCheck(StringRef Name, ClangTidyContext *Context,
-                    StringRef MakeSmartPtrFunctionName);
+                    StringRef MakeSmartPtrFunctionName,
+                    StringRef SmartPtrClassName = {},
+                    unsigned int CheckOptions = NoOptions);
   void registerMatchers(ast_matchers::MatchFinder *Finder) final;
   void registerPPCallbacks(clang::CompilerInstance &Compiler) override;
   void check(const ast_matchers::MatchFinder::MatchResult &Result) final;
@@ -48,6 +55,8 @@ protected:
 private:
   std::unique_ptr<utils::IncludeInserter> Inserter;
   const utils::IncludeSorter::IncludeStyle IncludeStyle;
+  const unsigned int CheckOptions;
+  const std::string SmartPtrClassName;
   const std::string MakeSmartPtrFunctionHeader;
   const std::string MakeSmartPtrFunctionName;
 
